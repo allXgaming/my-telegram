@@ -9,7 +9,8 @@ from collections import deque, Counter
 
 # ============ অনুমোদিত ইউজারনেম (সরাসরি কোডে) ============
 AUTHORIZED_USERNAMES = [
-    "Mrperfectguidesofficial",  # আপনার ইউজারনেম দিন
+    "@Mrperfectguidesofficial",  # আপনার ইউজারনেম দিন
+    "Two_in_one_account",
     # এখানে আরও যোগ করুন
 ]
 
@@ -53,7 +54,7 @@ init_db()
 
 # ============ CONSTANTS ============
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # আপনার টোকেন দিন
+BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"  # আপনার টোকেন দিন
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ============ HELPER: HTTP ============
