@@ -58,28 +58,23 @@ API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.jso
 BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
-# ============ URLLIB HELPER ============
+# ============ HELPER: urllib.request based HTTP calls ============
 def http_get(url, timeout=10):
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
             return response.read().decode('utf-8')
-    except urllib.error.URLError:
+    except Exception:
         return None
 
-def http_post(url, data=None, timeout=10):
+def http_post(url, data=None, json_data=None, timeout=10):
     try:
-        if data:
-            data_bytes = json.dumps(data).encode('utf-8')
-            req = urllib.request.Request(url, data=data_bytes, headers={
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0'
-            })
-        else:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        headers = {'Content-Type': 'application/json'} if json_data else {}
+        if json_data:
+            data = json.dumps(json_data).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return response.read().decode('utf-8')
-    except urllib.error.URLError:
+    except Exception:
         return None
 
 # ============ UI FORMAT ============
@@ -178,9 +173,10 @@ class Predictor:
     def fetch_data(self):
         try:
             ts = int(time.time() * 1000)
-            response = http_get(API_URL.format(ts), timeout=10)
-            if response:
-                data = json.loads(response)
+            url = API_URL.format(ts)
+            resp = http_get(url, timeout=10)
+            if resp:
+                data = json.loads(resp)
                 return data.get("data", {}).get("list", [])
         except:
             pass
@@ -351,7 +347,9 @@ class Predictor:
     def send_message(self, chat_id, text):
         if chat_id:
             try:
-                http_post(TELEGRAM_API + "sendMessage", data={"chat_id": chat_id, "text": text}, timeout=10)
+                url = TELEGRAM_API + "sendMessage"
+                payload = {"chat_id": chat_id, "text": text}
+                http_post(url, json_data=payload, timeout=10)
             except:
                 pass
 
@@ -429,6 +427,7 @@ class Predictor:
                                                            current_prediction["size"], 
                                                            current_prediction["range"]))
                     
+                    # Update stats in Firebase
                     try:
                         fb_db.collection('stats').document('live_stats').set({
                             'wins': self.wins,
@@ -457,10 +456,13 @@ def get_updates(offset=None):
     params = {"timeout": 30}
     if offset:
         params["offset"] = offset
+    # build query string
+    query = "&".join([f"{k}={v}" for k, v in params.items()])
+    full_url = f"{url}?{query}"
     try:
-        response = http_get(url + "?" + "&".join([f"{k}={v}" for k, v in params.items()]), timeout=35)
-        if response:
-            data = json.loads(response)
+        resp = http_get(full_url, timeout=35)
+        if resp:
+            data = json.loads(resp)
             return data.get("result", [])
     except:
         pass
@@ -468,7 +470,7 @@ def get_updates(offset=None):
 
 def main():
     global last_update_id
-    print("Bot starting... (v2.0 - Firebase Real-time | No external libs)")
+    print("Bot starting... (v2.0 - No requests library)")
     print("Only Level 1 (>=90%)")
 
     while True:
@@ -488,7 +490,7 @@ def main():
                                 [{"text": "CONTACT", "url": "https://t.me/your_username"}]
                             ]
                         }
-                        http_post(TELEGRAM_API + "sendMessage", data={
+                        http_post(TELEGRAM_API + "sendMessage", json_data={
                             "chat_id": chat_id,
                             "text": "SUBHA Bot v2.0\n\nReal-time prediction bot.\nOnly Level 1 (>=90%)",
                             "reply_markup": keyboard
@@ -499,7 +501,7 @@ def main():
                     chat_id = cb["message"]["chat"]["id"]
                     data = cb["data"]
                     cb_id = cb["id"]
-                    http_post(TELEGRAM_API + "answerCallbackQuery", data={"callback_query_id": cb_id}, timeout=5)
+                    http_post(TELEGRAM_API + "answerCallbackQuery", json_data={"callback_query_id": cb_id}, timeout=5)
 
                     if data == "start":
                         if not predictor.running:
