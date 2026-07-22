@@ -3,7 +3,8 @@ import sqlite3
 import threading
 import math
 import json
-import requests
+import urllib.request
+import urllib.error
 from collections import deque, Counter
 from datetime import datetime, timedelta
 import firebase_admin
@@ -56,6 +57,30 @@ init_db()
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
 BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
+
+# ============ URLLIB HELPER ============
+def http_get(url, timeout=10):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read().decode('utf-8')
+    except urllib.error.URLError:
+        return None
+
+def http_post(url, data=None, timeout=10):
+    try:
+        if data:
+            data_bytes = json.dumps(data).encode('utf-8')
+            req = urllib.request.Request(url, data=data_bytes, headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0'
+            })
+        else:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read().decode('utf-8')
+    except urllib.error.URLError:
+        return None
 
 # ============ UI FORMAT ============
 def format_prediction_ui(pred_data, period):
@@ -153,9 +178,10 @@ class Predictor:
     def fetch_data(self):
         try:
             ts = int(time.time() * 1000)
-            r = requests.get(API_URL.format(ts), timeout=10)
-            if r.status_code == 200:
-                return r.json().get("data", {}).get("list", [])
+            response = http_get(API_URL.format(ts), timeout=10)
+            if response:
+                data = json.loads(response)
+                return data.get("data", {}).get("list", [])
         except:
             pass
         return []
@@ -325,7 +351,7 @@ class Predictor:
     def send_message(self, chat_id, text):
         if chat_id:
             try:
-                requests.post(TELEGRAM_API + "sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+                http_post(TELEGRAM_API + "sendMessage", data={"chat_id": chat_id, "text": text}, timeout=10)
             except:
                 pass
 
@@ -403,7 +429,6 @@ class Predictor:
                                                            current_prediction["size"], 
                                                            current_prediction["range"]))
                     
-                    # Update stats in Firebase
                     try:
                         fb_db.collection('stats').document('live_stats').set({
                             'wins': self.wins,
@@ -433,16 +458,17 @@ def get_updates(offset=None):
     if offset:
         params["offset"] = offset
     try:
-        r = requests.get(url, params=params, timeout=35)
-        if r.status_code == 200:
-            return r.json().get("result", [])
+        response = http_get(url + "?" + "&".join([f"{k}={v}" for k, v in params.items()]), timeout=35)
+        if response:
+            data = json.loads(response)
+            return data.get("result", [])
     except:
         pass
     return []
 
 def main():
     global last_update_id
-    print("Bot starting... (v2.0 - Firebase Real-time)")
+    print("Bot starting... (v2.0 - Firebase Real-time | No external libs)")
     print("Only Level 1 (>=90%)")
 
     while True:
@@ -462,7 +488,7 @@ def main():
                                 [{"text": "CONTACT", "url": "https://t.me/your_username"}]
                             ]
                         }
-                        requests.post(TELEGRAM_API + "sendMessage", json={
+                        http_post(TELEGRAM_API + "sendMessage", data={
                             "chat_id": chat_id,
                             "text": "SUBHA Bot v2.0\n\nReal-time prediction bot.\nOnly Level 1 (>=90%)",
                             "reply_markup": keyboard
@@ -473,7 +499,7 @@ def main():
                     chat_id = cb["message"]["chat"]["id"]
                     data = cb["data"]
                     cb_id = cb["id"]
-                    requests.post(TELEGRAM_API + "answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=5)
+                    http_post(TELEGRAM_API + "answerCallbackQuery", data={"callback_query_id": cb_id}, timeout=5)
 
                     if data == "start":
                         if not predictor.running:
