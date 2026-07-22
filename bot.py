@@ -7,13 +7,6 @@ import urllib.request
 import urllib.error
 from collections import deque, Counter
 from datetime import datetime, timedelta
-import firebase_admin
-from firebase_admin import credentials, firestore
-
-# ============ FIREBASE INIT ============
-cred = credentials.Certificate("your-firebase-key.json")
-firebase_admin.initialize_app(cred)
-fb_db = firestore.client()
 
 # ============ DATABASE ============
 def init_db():
@@ -55,7 +48,7 @@ init_db()
 
 # ============ CONSTANTS ============
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
-BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
+BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"  # আপনার টোকেন দিন
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ============ HELPER: urllib.request based HTTP calls ============
@@ -111,10 +104,7 @@ def format_prediction_ui(pred_data, period):
     return ui
 
 def format_result_ui(period, number, actual_size, result, pred, range_pred):
-    if result == "WIN":
-        status = "WIN"
-    else:
-        status = "LOSS"
+    status = "WIN" if result == "WIN" else "LOSS"
     ui = f"""
 {status}
 ╭────────────────────────────╮
@@ -138,32 +128,13 @@ class Predictor:
         self.best_streak = 0
         self.total_predictions = 0
         self.running = False
-        self.chat_id = None
-        self.allowed_users = set()
+        self.active_chats = set()          # যারা START চেপেছে তাদের চ্যাট আইডি
         self.load_from_db()
-        self.start_user_listener()
 
     def load_from_db(self):
         for _, num, _, _, _, _ in load_recent_history(300):
             if num is not None:
                 self.history.append(num)
-
-    def start_user_listener(self):
-        def listener_thread():
-            try:
-                query = fb_db.collection('users')
-                def on_snapshot(doc_snapshot, changes, read_time):
-                    updated_users = set()
-                    for doc in doc_snapshot:
-                        updated_users.add(doc.id)
-                    self.allowed_users = updated_users
-                
-                query.on_snapshot(on_snapshot)
-            except Exception as e:
-                print("Listener error:", e)
-                time.sleep(5)
-        
-        threading.Thread(target=listener_thread, daemon=True).start()
 
     def update(self, num, period, prediction=None, result=None, range_pred=None):
         size = "BIG" if num >= 5 else "SMALL"
@@ -353,26 +324,35 @@ class Predictor:
             except:
                 pass
 
-    def start(self, chat_id):
-        if self.running:
-            return
-        self.running = True
-        self.chat_id = chat_id
-        self.send_message(chat_id, "Prediction started. Level 1 only (>=90%)")
-        threading.Thread(target=self._loop, daemon=True).start()
+    def broadcast(self, text):
+        """সব সক্রিয় চ্যাটে মেসেজ পাঠায়"""
+        for cid in list(self.active_chats):
+            self.send_message(cid, text)
 
-    def stop(self):
-        self.running = False
-        if self.chat_id:
-            self.send_message(self.chat_id, "Stopped.")
+    def start(self, chat_id):
+        if not self.running:
+            self.running = True
+            self.active_chats.add(chat_id)
+            self.send_message(chat_id, "Prediction started. Level 1 only (>=90%)")
+            threading.Thread(target=self._loop, daemon=True).start()
+        else:
+            self.active_chats.add(chat_id)
+            self.send_message(chat_id, "You are now active. Predictions will be sent here.")
+
+    def stop(self, chat_id):
+        if chat_id in self.active_chats:
+            self.active_chats.remove(chat_id)
+            self.send_message(chat_id, "You have stopped receiving predictions.")
+        if not self.active_chats:
+            self.running = False
 
     def _loop(self):
         seen = set()
         predictions_sent = set()
         current_prediction = None
 
-        while self.running:
-            if not self.allowed_users:
+        while self.running or self.active_chats:
+            if not self.active_chats:
                 time.sleep(2)
                 continue
 
@@ -408,8 +388,7 @@ class Predictor:
                                 "size": pred_data["size"],
                                 "range": pred_data["range"]
                             }
-                            for cid in list(self.allowed_users):
-                                self.send_message(cid, format_prediction_ui(pred_data, next_period))
+                            self.broadcast(format_prediction_ui(pred_data, next_period))
                             predictions_sent.add(next_period)
 
                 if current_prediction and current_prediction["period"] == period and number is not None:
@@ -417,29 +396,14 @@ class Predictor:
                     won = (actual_size == current_prediction["size"])
                     res = "WIN" if won else "LOSS"
                     self.update_result(won)
-                    self.update(number, period, 
-                               prediction=current_prediction["size"], 
-                               result=res, 
+                    self.update(number, period,
+                               prediction=current_prediction["size"],
+                               result=res,
                                range_pred=current_prediction["range"])
-                    
-                    for cid in list(self.allowed_users):
-                        self.send_message(cid, format_result_ui(period, number, actual_size, res, 
-                                                           current_prediction["size"], 
-                                                           current_prediction["range"]))
-                    
-                    # Update stats in Firebase
-                    try:
-                        fb_db.collection('stats').document('live_stats').set({
-                            'wins': self.wins,
-                            'losses': self.losses,
-                            'streak': self.streak,
-                            'best_streak': self.best_streak,
-                            'total': self.total_predictions,
-                            'last_updated': firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                    except:
-                        pass
-                    
+
+                    self.broadcast(format_result_ui(period, number, actual_size, res,
+                                                    current_prediction["size"],
+                                                    current_prediction["range"]))
                     current_prediction = None
 
                 time.sleep(1)
@@ -456,7 +420,6 @@ def get_updates(offset=None):
     params = {"timeout": 30}
     if offset:
         params["offset"] = offset
-    # build query string
     query = "&".join([f"{k}={v}" for k, v in params.items()])
     full_url = f"{url}?{query}"
     try:
@@ -470,7 +433,7 @@ def get_updates(offset=None):
 
 def main():
     global last_update_id
-    print("Bot starting... (v2.0 - No requests library)")
+    print("Bot starting... (Firebase removed)")
     print("Only Level 1 (>=90%)")
 
     while True:
@@ -492,7 +455,7 @@ def main():
                         }
                         http_post(TELEGRAM_API + "sendMessage", json_data={
                             "chat_id": chat_id,
-                            "text": "SUBHA Bot v2.0\n\nReal-time prediction bot.\nOnly Level 1 (>=90%)",
+                            "text": "SUBHA Bot v2.0 (No Firebase)\n\nReal-time prediction bot.\nOnly Level 1 (>=90%)",
                             "reply_markup": keyboard
                         }, timeout=10)
 
@@ -504,14 +467,13 @@ def main():
                     http_post(TELEGRAM_API + "answerCallbackQuery", json_data={"callback_query_id": cb_id}, timeout=5)
 
                     if data == "start":
-                        if not predictor.running:
-                            predictor.start(chat_id)
-                        else:
-                            predictor.send_message(chat_id, "Already running")
+                        predictor.start(chat_id)
                     elif data == "stop":
-                        predictor.stop()
+                        predictor.stop(chat_id)
                     elif data == "status":
-                        stats = f"STATS\nWin: {predictor.wins}\nLoss: {predictor.losses}\nStreak: {predictor.streak}\nBest: {predictor.best_streak}\nTotal: {predictor.total_predictions}"
+                        stats = (f"STATS\nWin: {predictor.wins}\nLoss: {predictor.losses}\n"
+                                 f"Streak: {predictor.streak}\nBest: {predictor.best_streak}\n"
+                                 f"Total: {predictor.total_predictions}")
                         predictor.send_message(chat_id, stats)
             time.sleep(1)
         except Exception as e:
