@@ -54,7 +54,7 @@ init_db()
 
 # ============ CONSTANTS ============
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
-BOT_TOKEN = "8803777907:AAFPud19O5QDy0JtOeyGl_L_-smG86ZYQyM"
+BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 # ============ UI FORMAT ============
