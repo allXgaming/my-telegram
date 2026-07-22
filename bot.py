@@ -7,6 +7,13 @@ import urllib.request
 import urllib.error
 from collections import deque, Counter
 from datetime import datetime, timedelta
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# ============ FIREBASE INIT ============
+cred = credentials.Certificate("your-firebase-key.json")  # আপনার JSON ফাইলের নাম দিন
+firebase_admin.initialize_app(cred)
+fb_db = firestore.client()
 
 # ============ DATABASE ============
 def init_db():
@@ -48,10 +55,10 @@ init_db()
 
 # ============ CONSTANTS ============
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
-BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"  # আপনার টোকেন দিন
+BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"  # আপনার টোকেন
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
-# ============ HELPER: urllib.request based HTTP calls ============
+# ============ HELPER: urllib.request based HTTP ============
 def http_get(url, timeout=10):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
@@ -127,15 +134,58 @@ class Predictor:
         self.streak = 0
         self.best_streak = 0
         self.total_predictions = 0
-        self.running = False
-        self.active_chats = set()          # যারা START চেপেছে তাদের চ্যাট আইডি
+        self.running = False          # Firebase settings থেকে আপডেট হবে
+        self.allowed_users = set()    # Firebase users collection থেকে আপডেট হবে
+        self.active_chats = set()     # যারা টেলিগ্রামে START চেপেছে
         self.load_from_db()
+        self.start_user_listener()
+        self.start_settings_listener()
 
     def load_from_db(self):
         for _, num, _, _, _, _ in load_recent_history(300):
             if num is not None:
                 self.history.append(num)
 
+    # ---------- Firebase Listeners ----------
+    def start_user_listener(self):
+        """users collection এর পরিবর্তন শুনে allowed_users আপডেট করে"""
+        def listener_thread():
+            try:
+                query = fb_db.collection('users')
+                def on_snapshot(doc_snapshot, changes, read_time):
+                    updated_users = set()
+                    for doc in doc_snapshot:
+                        updated_users.add(doc.id)   # doc.id = chat_id
+                    self.allowed_users = updated_users
+                    print(f"Allowed users updated: {len(self.allowed_users)} users")
+                
+                query.on_snapshot(on_snapshot)
+            except Exception as e:
+                print("User listener error:", e)
+                time.sleep(5)
+        
+        threading.Thread(target=listener_thread, daemon=True).start()
+
+    def start_settings_listener(self):
+        """settings/bot_config ডকুমেন্টের পরিবর্তন শুনে running flag আপডেট করে"""
+        def listener_thread():
+            try:
+                doc_ref = fb_db.collection('settings').document('bot_config')
+                def on_snapshot(doc_snapshot, changes, read_time):
+                    if doc_snapshot:
+                        data = doc_snapshot[0].to_dict() if doc_snapshot else {}
+                        is_running = data.get('is_running', False)
+                        self.running = is_running
+                        print(f"Bot running state: {self.running}")
+                
+                doc_ref.on_snapshot(on_snapshot)
+            except Exception as e:
+                print("Settings listener error:", e)
+                time.sleep(5)
+        
+        threading.Thread(target=listener_thread, daemon=True).start()
+
+    # ---------- Core Methods ----------
     def update(self, num, period, prediction=None, result=None, range_pred=None):
         size = "BIG" if num >= 5 else "SMALL"
         self.history.append(num)
@@ -325,34 +375,43 @@ class Predictor:
                 pass
 
     def broadcast(self, text):
-        """সব সক্রিয় চ্যাটে মেসেজ পাঠায়"""
-        for cid in list(self.active_chats):
+        """সব অনুমোদিত ও সক্রিয় ইউজারকে মেসেজ পাঠায়"""
+        for cid in list(self.allowed_users.intersection(self.active_chats)):
             self.send_message(cid, text)
 
-    def start(self, chat_id):
-        if not self.running:
-            self.running = True
-            self.active_chats.add(chat_id)
-            self.send_message(chat_id, "Prediction started. Level 1 only (>=90%)")
-            threading.Thread(target=self._loop, daemon=True).start()
-        else:
-            self.active_chats.add(chat_id)
+    # ---------- Telegram Commands ----------
+    def start_chat(self, chat_id):
+        """ইউজার START চাপলে তাকে active তালিকায় যোগ করি (যদি অনুমোদিত হয়)"""
+        if str(chat_id) in self.allowed_users:
+            self.active_chats.add(str(chat_id))
             self.send_message(chat_id, "You are now active. Predictions will be sent here.")
+        else:
+            self.send_message(chat_id, "You are not authorized to use this bot.")
 
-    def stop(self, chat_id):
-        if chat_id in self.active_chats:
-            self.active_chats.remove(chat_id)
+    def stop_chat(self, chat_id):
+        if str(chat_id) in self.active_chats:
+            self.active_chats.remove(str(chat_id))
             self.send_message(chat_id, "You have stopped receiving predictions.")
-        if not self.active_chats:
-            self.running = False
 
+    def status(self, chat_id):
+        stats = (f"STATS\nWin: {self.wins}\nLoss: {self.losses}\n"
+                 f"Streak: {self.streak}\nBest: {self.best_streak}\n"
+                 f"Total: {self.total_predictions}")
+        self.send_message(chat_id, stats)
+
+    # ---------- Main Loop ----------
     def _loop(self):
         seen = set()
         predictions_sent = set()
         current_prediction = None
 
-        while self.running or self.active_chats:
-            if not self.active_chats:
+        while True:
+            # শুধু চলমান অবস্থায় এবং অনুমোদিত ইউজার থাকলে কাজ করবে
+            if not self.running:
+                time.sleep(2)
+                continue
+
+            if not self.allowed_users:
                 time.sleep(2)
                 continue
 
@@ -404,6 +463,20 @@ class Predictor:
                     self.broadcast(format_result_ui(period, number, actual_size, res,
                                                     current_prediction["size"],
                                                     current_prediction["range"]))
+
+                    # Firebase-এ স্ট্যাটস আপডেট
+                    try:
+                        fb_db.collection('stats').document('live_stats').set({
+                            'wins': self.wins,
+                            'losses': self.losses,
+                            'streak': self.streak,
+                            'best_streak': self.best_streak,
+                            'total': self.total_predictions,
+                            'last_updated': firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                    except Exception as e:
+                        print("Stats update error:", e)
+
                     current_prediction = None
 
                 time.sleep(1)
@@ -414,6 +487,9 @@ class Predictor:
 # ============ TELEGRAM HANDLER ============
 predictor = Predictor()
 last_update_id = 0
+
+# বটের লুপটি একটি থ্রেডে চালু করি
+threading.Thread(target=predictor._loop, daemon=True).start()
 
 def get_updates(offset=None):
     url = TELEGRAM_API + "getUpdates"
@@ -433,8 +509,8 @@ def get_updates(offset=None):
 
 def main():
     global last_update_id
-    print("Bot starting... (Firebase removed)")
-    print("Only Level 1 (>=90%)")
+    print("Bot starting with Firebase user control...")
+    print("Only authorized users (in Firestore 'users' collection) can receive predictions.")
 
     while True:
         try:
@@ -443,7 +519,7 @@ def main():
                 last_update_id = update["update_id"]
                 msg = update.get("message")
                 if msg:
-                    chat_id = msg["chat"]["id"]
+                    chat_id = str(msg["chat"]["id"])   # string হিসেবে রাখি
                     if msg.get("text") == "/start":
                         keyboard = {
                             "inline_keyboard": [
@@ -455,26 +531,24 @@ def main():
                         }
                         http_post(TELEGRAM_API + "sendMessage", json_data={
                             "chat_id": chat_id,
-                            "text": "SUBHA Bot v2.0 (No Firebase)\n\nReal-time prediction bot.\nOnly Level 1 (>=90%)",
+                            "text": "SUBHA Bot v2.0 (Firebase Auth)\n\nYou must be authorized to use this bot.",
                             "reply_markup": keyboard
                         }, timeout=10)
 
                 cb = update.get("callback_query")
                 if cb:
-                    chat_id = cb["message"]["chat"]["id"]
+                    chat_id = str(cb["message"]["chat"]["id"])
                     data = cb["data"]
                     cb_id = cb["id"]
                     http_post(TELEGRAM_API + "answerCallbackQuery", json_data={"callback_query_id": cb_id}, timeout=5)
 
                     if data == "start":
-                        predictor.start(chat_id)
+                        predictor.start_chat(chat_id)
                     elif data == "stop":
-                        predictor.stop(chat_id)
+                        predictor.stop_chat(chat_id)
                     elif data == "status":
-                        stats = (f"STATS\nWin: {predictor.wins}\nLoss: {predictor.losses}\n"
-                                 f"Streak: {predictor.streak}\nBest: {predictor.best_streak}\n"
-                                 f"Total: {predictor.total_predictions}")
-                        predictor.send_message(chat_id, stats)
+                        predictor.status(chat_id)
+
             time.sleep(1)
         except Exception as e:
             print("Main error:", e)
