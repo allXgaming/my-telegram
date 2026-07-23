@@ -4,7 +4,6 @@ import urllib.request
 import urllib.error
 from database import init_csv
 from predictor import Predictor
-from ui import format_prediction_ui, format_result_ui
 
 # ============ কনফিগারেশন ============
 BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
@@ -17,7 +16,8 @@ def http_get(url):
         with urllib.request.urlopen(req, timeout=30) as response:
             data = response.read().decode('utf-8')
             return json.loads(data)
-    except:
+    except Exception as e:
+        print("HTTP GET error:", e)
         return None
 
 def http_post(url, json_data):
@@ -26,12 +26,9 @@ def http_post(url, json_data):
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.read().decode('utf-8')
-    except:
+    except Exception as e:
+        print("HTTP POST error:", e)
         return None
-
-# ============ গ্লোবাল ============
-predictor = Predictor()
-last_update_id = 0
 
 # ============ টেলিগ্রাম ফাংশন ============
 def get_updates(offset=None):
@@ -40,29 +37,33 @@ def get_updates(offset=None):
     if offset:
         params["offset"] = offset
     try:
-        # urllib দিয়ে GET + query param
         query = "&".join([f"{k}={v}" for k, v in params.items()])
         full_url = f"{url}?{query}"
         data = http_get(full_url)
         if data:
             return data.get("result", [])
-    except:
-        pass
+    except Exception as e:
+        print("get_updates error:", e)
     return []
 
 def send_message(chat_id, text, parse_mode="HTML"):
     try:
         http_post(TELEGRAM_API + "sendMessage", 
                  {"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
-    except:
-        pass
+    except Exception as e:
+        print("send_message error:", e)
 
-# ============ মেইন ============
+# ============ গ্লোবাল ভেরিয়েবল ============
+predictor = Predictor()
+last_update_id = 0
+
+# ============ মেইন ফাংশন ============
 def main():
     global last_update_id
     print("🤖 বট চালু হচ্ছে... (বিল্ট-ইন মডিউল + CSV)")
     print("📊 LEVEL 1 (≥92%) | LEVEL 2 (≥85%)")
     
+    # CSV ফাইল তৈরি (যদি না থাকে)
     init_csv()
 
     while True:
@@ -70,10 +71,14 @@ def main():
             updates = get_updates(last_update_id + 1 if last_update_id else None)
             for update in updates:
                 last_update_id = update["update_id"]
+                
+                # ---------- মেসেজ হ্যান্ডলিং ----------
                 msg = update.get("message")
                 if msg:
                     chat_id = msg["chat"]["id"]
-                    if msg.get("text") == "/start":
+                    text = msg.get("text")
+                    
+                    if text == "/start":
                         keyboard = {
                             "inline_keyboard": [
                                 [{"text": "▶️ START", "callback_data": "start"}],
@@ -88,7 +93,11 @@ def main():
                             "reply_markup": keyboard,
                             "parse_mode": "Markdown"
                         })
-
+                    
+                    elif text == "/predictor":
+                        send_message(chat_id, "হ্যালো 👋")
+                
+                # ---------- ক্যালব্যাক কোয়েরি হ্যান্ডলিং ----------
                 cb = update.get("callback_query")
                 if cb:
                     chat_id = cb["message"]["chat"]["id"]
@@ -100,16 +109,17 @@ def main():
                         if not predictor.running:
                             predictor.start(chat_id)
                         else:
-                            send_message(chat_id, "⏳ চলছে...")
+                            send_message(chat_id, "⏳ বট ইতিমধ্যেই চলছে...")
                     elif data == "stop":
                         predictor.stop()
                     elif data == "status":
                         stats = (f"📊 *পরিসংখ্যান*\n✅ জয়: {predictor.wins}\n❌ হার: {predictor.losses}\n"
                                  f"🔥 স্ট্রিক: {predictor.streak}\n🏆 সেরা: {predictor.best_streak}\n📈 মোট: {predictor.total_predictions}")
                         send_message(chat_id, stats, parse_mode="Markdown")
+            
             time.sleep(1)
         except Exception as e:
-            print("Main error:", e)
+            print("Main loop error:", e)
             time.sleep(5)
 
 if __name__ == "__main__":
