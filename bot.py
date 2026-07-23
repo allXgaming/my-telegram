@@ -1,7 +1,8 @@
 import time
-import threading
-import requests
-from database import init_excel
+import json
+import urllib.request
+import urllib.error
+from database import init_csv
 from predictor import Predictor
 from ui import format_prediction_ui, format_result_ui
 
@@ -9,7 +10,26 @@ from ui import format_prediction_ui, format_result_ui
 BOT_TOKEN = "7768747736:AAHRFAiemrbWwo2aCY0geWyBBY385gPJcZ8"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
-# ============ গ্লোবাল ভেরিয়েবল ============
+# ============ HTTP ফাংশন ============
+def http_get(url):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = response.read().decode('utf-8')
+            return json.loads(data)
+    except:
+        return None
+
+def http_post(url, json_data):
+    try:
+        data = json.dumps(json_data).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.read().decode('utf-8')
+    except:
+        return None
+
+# ============ গ্লোবাল ============
 predictor = Predictor()
 last_update_id = 0
 
@@ -20,29 +40,30 @@ def get_updates(offset=None):
     if offset:
         params["offset"] = offset
     try:
-        r = requests.get(url, params=params, timeout=35)
-        if r.status_code == 200:
-            return r.json().get("result", [])
+        # urllib দিয়ে GET + query param
+        query = "&".join([f"{k}={v}" for k, v in params.items()])
+        full_url = f"{url}?{query}"
+        data = http_get(full_url)
+        if data:
+            return data.get("result", [])
     except:
         pass
     return []
 
 def send_message(chat_id, text, parse_mode="HTML"):
     try:
-        requests.post(TELEGRAM_API + "sendMessage", 
-                     json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode}, 
-                     timeout=10)
+        http_post(TELEGRAM_API + "sendMessage", 
+                 {"chat_id": chat_id, "text": text, "parse_mode": parse_mode})
     except:
         pass
 
-# ============ মেইন ফাংশন ============
+# ============ মেইন ============
 def main():
     global last_update_id
-    print("🤖 বট চালু হচ্ছে... (Excel ডেটাবেস + মডুলার)")
+    print("🤖 বট চালু হচ্ছে... (বিল্ট-ইন মডিউল + CSV)")
     print("📊 LEVEL 1 (≥92%) | LEVEL 2 (≥85%)")
     
-    # Excel ফাইল চেক/ক্রিয়েট
-    init_excel()
+    init_csv()
 
     while True:
         try:
@@ -61,19 +82,19 @@ def main():
                                 [{"text": "📞 CONTACT", "url": "https://t.me/your_username"}]
                             ]
                         }
-                        requests.post(TELEGRAM_API + "sendMessage", json={
+                        http_post(TELEGRAM_API + "sendMessage", json={
                             "chat_id": chat_id,
                             "text": "🤖 *SUBHA v17.0 (NO SKIP + NEW UI)*\n\n✅ প্রতি পিরিয়ডে প্রেডিকশন (স্কিপিং বন্ধ)\n✅ LEVEL 1 (≥92%) | LEVEL 2 (≥85%)\n✅ নতুন UI - AI ANALYSIS + VOTING + METRICS\n\nনিচের বোতাম চাপুন।",
                             "reply_markup": keyboard,
                             "parse_mode": "Markdown"
-                        }, timeout=10)
+                        })
 
                 cb = update.get("callback_query")
                 if cb:
                     chat_id = cb["message"]["chat"]["id"]
                     data = cb["data"]
                     cb_id = cb["id"]
-                    requests.post(TELEGRAM_API + "answerCallbackQuery", json={"callback_query_id": cb_id}, timeout=5)
+                    http_post(TELEGRAM_API + "answerCallbackQuery", {"callback_query_id": cb_id})
 
                     if data == "start":
                         if not predictor.running:

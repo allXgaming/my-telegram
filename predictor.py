@@ -1,11 +1,33 @@
 import time
 import math
+import json
+import urllib.request
+import urllib.error
 from collections import deque, Counter
-import requests
 from database import load_recent_history, save_round
 
 API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json?ts={}"
 
+# ---------- HTTP ফাংশন (requests ছাড়া) ----------
+def http_get(url):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = response.read().decode('utf-8')
+            return json.loads(data)
+    except:
+        return None
+
+def http_post(url, json_data):
+    try:
+        data = json.dumps(json_data).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.read().decode('utf-8')
+    except:
+        return None
+
+# ---------- Predictor ক্লাস ----------
 class Predictor:
     def __init__(self):
         self.history = deque(maxlen=300)
@@ -26,9 +48,9 @@ class Predictor:
     def fetch_data(self):
         try:
             ts = int(time.time() * 1000)
-            r = requests.get(API_URL.format(ts), timeout=10)
-            if r.status_code == 200:
-                return r.json().get("data", {}).get("list", [])
+            data = http_get(API_URL.format(ts))
+            if data:
+                return data.get("data", {}).get("list", [])
         except:
             pass
         return []
@@ -54,7 +76,7 @@ class Predictor:
         mean = sum(recent) / w
         return math.sqrt(sum((x - mean) ** 2 for x in recent) / w)
 
-    # ---------- PREDICT (NO SKIP) ----------
+    # ---------- PREDICT (আগের মতোই) ----------
     def predict_size(self):
         hist = list(self.history)
         if len(hist) < 20:
@@ -63,13 +85,11 @@ class Predictor:
         last = hist[-1]
         last_size = "BIG" if last >= 5 else "SMALL"
 
-        # Special Numbers
         specials = {0: ("BIG", 99, "0 • 2"), 4: ("BIG", 99, "3 • 5"), 5: ("SMALL", 99, "5 • 7"), 9: ("SMALL", 99, "7 • 9")}
         if last in specials:
             s = specials[last]
             return s[0], s[1], s[2], "BULLISH", 70, "LOW", "SPECIAL", "STABLE", 90, 10
 
-        # Streak
         streak = 1
         for i in range(len(hist)-2, -1, -1):
             if (hist[i] >= 5) == (last >= 5):
@@ -77,7 +97,6 @@ class Predictor:
             else:
                 break
 
-        # DRAGON (5+)
         if streak >= 5:
             pred = last_size
             conf = 99
@@ -91,7 +110,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "STRONG BULLISH", 72, "LOW", "DRAGON", "STABLE", 95, 5
 
-        # 4-streak
         if streak == 4:
             pred = last_size
             conf = 97
@@ -105,7 +123,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "BULLISH", 68, "LOW", "4-STREAK", "STABLE", 90, 10
 
-        # 3-streak -> BREAK
         if streak == 3:
             pred = "SMALL" if last_size == "BIG" else "BIG"
             conf = 90
@@ -119,7 +136,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "BEARISH", 55, "MEDIUM", "3-STREAK BREAK", "UNSTABLE", 75, 25
 
-        # 2-streak -> BREAK
         if streak == 2:
             pred = "SMALL" if last_size == "BIG" else "BIG"
             conf = 85
@@ -133,7 +149,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "NEUTRAL", 52, "MEDIUM", "2-STREAK BREAK", "STABLE", 70, 30
 
-        # Alternating Pattern
         def is_alt(l):
             if len(hist) < l:
                 return False
@@ -168,7 +183,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "BULLISH", 60, "LOW", "ALTERNATING 6", "STABLE", 80, 20
 
-        # Trap
         if is_alt(5):
             pred = last_size
             conf = 85
@@ -182,7 +196,6 @@ class Predictor:
                 rng = "5 • 9" if pred == "BIG" else "0 • 4"
             return pred, conf, rng, "NEUTRAL", 55, "MEDIUM", "TRAP", "STABLE", 72, 28
 
-        # Indicators
         ma5 = self.ma(hist, 5)
         ma10 = self.ma(hist, 10)
         ma20 = self.ma(hist, 20)
@@ -198,7 +211,6 @@ class Predictor:
         std = self.std_dev(hist, 20)
         std_text = "LOW" if std < 1.5 else "MEDIUM" if std < 2.5 else "HIGH"
 
-        # Voting
         votes = {"BIG": 0, "SMALL": 0}
         votes["SMALL" if last_size == "BIG" else "BIG"] += 1
 
@@ -228,14 +240,12 @@ class Predictor:
         else:
             conf = 70
 
-        # Metrics
         big_pct = int((votes["BIG"] / total) * 100) if total > 0 else 50
         small_pct = int((votes["SMALL"] / total) * 100) if total > 0 else 50
         ma_text = ma_trend
         pattern_text = "ALTERNATING" if is_alt(4) else "RANDOM"
         cycle_text = "STABLE" if std < 1.5 else "UNSTABLE"
 
-        # Range
         recent = hist[-20:] if len(hist) >= 20 else hist
         if pred == "BIG":
             nums = [x for x in recent if x >= 5]
@@ -281,8 +291,8 @@ class Predictor:
             chat_id = self.chat_id
         if chat_id:
             try:
-                import requests
-                requests.post(TELEGRAM_API + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+                from bot import TELEGRAM_API  # এখানে ইমপোর্ট করব
+                http_post(TELEGRAM_API + "sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
             except:
                 pass
 
@@ -291,6 +301,7 @@ class Predictor:
             return
         self.running, self.chat_id = True, chat_id
         self.send_message("✅ প্রেডিকশন শুরু! (শুধু LEVEL 1-2: ≥85%)")
+        import threading
         threading.Thread(target=self._loop, daemon=True).start()
 
     def stop(self):
@@ -359,6 +370,3 @@ class Predictor:
             except Exception as e:
                 print("Loop error:", e)
                 time.sleep(2)
-
-# গ্লোবাল API এবং টেলিগ্রাম কনস্ট্যান্ট
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
